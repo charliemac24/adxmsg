@@ -209,9 +209,11 @@ Route::prefix('v1')->group(function () {
             'accept' => $request->header('Accept'),
             'all_headers' => $request->headers->all(),
         ]);
-    });
+    });   
 
-    // legacy / reference (commented) routes -- keep here for manual review if needed
+});
+// These are all inactive routes or legacy routes kept for reference
+// legacy / reference (commented) routes -- keep here for manual review if needed
     // Route::post('/outbound/send-bulk', [OutboundMessageController::class, 'sendBulk'])->name('outbound.send.bulk');
 
     // Inactive
@@ -232,5 +234,3 @@ Route::prefix('v1')->group(function () {
     #Route::post('/inbound/threads/latest-by-phone', [InboundMessageController::class, 'latestThreadsByPhones']); // inactive
 
     #Route::get('/inbound/{id}/thread', [InboundMessageController::class, 'thread'])->where('id', '[0-9]+'); // inactive
-
-});
