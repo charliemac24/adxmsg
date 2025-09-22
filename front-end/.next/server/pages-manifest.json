@@ -1,0 +1,10 @@
+{
+  "/_app": "pages/_app.js",
+  "/_document": "pages/_document.js",
+  "/_error": "pages/_error.js",
+  "/dashboard": "pages/dashboard.js",
+  "/contacts/import": "pages/contacts/import.js",
+  "/sms/campaign": "pages/sms/campaign.js",
+  "/": "pages/index.js",
+  "/sms/templates": "pages/sms/templates.js"
+}

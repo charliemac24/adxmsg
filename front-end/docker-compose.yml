@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  nextjs:
+    image: node:18
+    container_name: adx-msd-nextjs
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development

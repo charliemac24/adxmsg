@@ -1,0 +1,273 @@
+:root {
+  --font-size-base: 14px; /* slightly smaller base font */
+  --font-size-small: 13px;
+  --font-size-smaller: 12px;
+  --rounded: 3px; /* reduced rounded corners */
+  --primary: #46aa42; /* preserve primary color */
+  --bg: #ffffff;
+  --card-bg: #ffffff;
+  --muted: #6b7280;
+}
+
+/* Global base */
+html, body, #__next {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Roboto, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  font-size: var(--font-size-base);
+  color: #222;
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Controls: buttons, inputs, selects, textareas */
+button,
+input,
+select,
+textarea {
+  font-size: var(--font-size-base) !important;
+  border-radius: var(--rounded) !important;
+}
+
+/* Force all buttons to use 3px border radius (override inline styles) */
+button, input[type="button"], input[type="submit"], .btn, .button, .btn-primary, .primary {
+  border-radius: 3px !important;
+}
+
+/* Make buttons flatter and modern */
+button {
+  border: none !important;
+  box-shadow: none !important;
+  padding: 8px 12px !important;
+  line-height: 1 !important;
+  cursor: pointer;
+}
+
+.btn, .button { border-radius: var(--rounded) !important; }
+
+/* Utility class to force a 3px border radius for specific buttons */
+.btn-fixed-radius { border-radius: 3px !important; }
+
+/* Helper to suppress the pseudo-icon for a specific button when needed */
+.no-icon::before { content: none !important; display: none !important; }
+
+/* When icon is suppressed, remove gap and ensure centered text */
+.btn.no-icon {
+  gap: 0 !important;
+  justify-content: center !important;
+  text-align: center !important;
+}
+
+/* Tables and cards */
+table, th, td {
+  font-size: var(--font-size-small) !important;
+}
+
+table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+/* Default table backgrounds are white (avoid grey page backdrop showing through) */
+table { background: #fff !important; }
+
+/* Apply a consistent card style */
+.card, .panel, .box, .table-wrapper, .modal, main, .content {
+  background: var(--card-bg) !important;
+  border-radius: calc(var(--rounded) + 2px) !important;
+  box-shadow: 0 1px 6px rgba(16,24,40,0.06) !important;
+}
+
+/* Header cells slightly smaller */
+thead th {
+  font-size: var(--font-size-small) !important;
+  padding: 10px 12px !important;
+}
+
+/* Align action column */
+thead th[aria-label="Actions"] span {
+  background: rgba(255,255,255,0.04) !important;
+  border-radius: calc(var(--rounded) - 2px) !important;
+  padding: 6px 8px !important;
+}
+
+/* Inputs and selects: flatter look */
+input, textarea, select {
+  border-radius: var(--rounded) !important;
+  border: 1px solid #e6e6e6 !important;
+  padding: 8px 8px !important;
+}
+
+/* Reduce modal border radius and padding */
+.modal-content, .modal, .confirm-modal {
+  border-radius: var(--rounded) !important;
+  padding: 16px !important;
+}
+
+/* Icons styling for a modern look */
+svg, .icon, i.fa, .icon-svg {
+  width: 16px !important;
+  height: 16px !important;
+  vertical-align: middle;
+  fill: currentColor;
+}
+
+/* Primary color usage */
+.primary, .btn-primary, button[style*='background: #46aa42'] {
+  background-color: var(--primary) !important;
+  color: #fff !important;
+}
+
+/* Muted text */
+.muted, .text-muted { color: var(--muted) !important; }
+
+/* Toast tweaks */
+.Toastify__toast-container { font-size: var(--font-size-small) !important; }
+
+/* Utility small text */
+.small, .text-small { font-size: var(--font-size-smaller) !important; }
+
+/* Table header style: consistent across the app.
+   Use moderate padding so all table headings (Campaigns, Contacts, Groups, etc.) have the same height.
+   This overrides per-page inline styles when necessary. */
+thead, thead tr {
+  background: var(--primary) !important;
+}
+
+/* Use a slightly smaller padding to match other table headers */
+thead th {
+  background: transparent !important; /* allow thead background to show */
+  color: #fff !important;
+  font-weight: 700 !important;
+  padding: 10px 12px !important; /* uniform header height */
+  vertical-align: middle !important;
+  border: none !important;
+  font-size: var(--font-size-small) !important;
+  text-align: left !important;
+}
+
+/* Rounded top corners for the table when inside a card/panel */
+table thead th:first-child {
+  border-top-left-radius: calc(var(--rounded) + 2px) !important;
+}
+table thead th:last-child {
+  border-top-right-radius: calc(var(--rounded) + 2px) !important;
+}
+
+/* Compact table variant: used to match All Contacts/Campaigns visual density */
+.compact-table {
+  border-radius: 3px;
+  overflow: hidden;
+}
+.compact-table thead th {
+  padding: 10px 12px !important; /* match All Contacts header height */
+}
+
+/* Enforce a fixed header height across all tables (60px). */
+/* Use line-height + zero vertical padding to ensure a consistent visual height
+   and vertical centering for single-line headers. The !important flags
+   override remaining inline styles. */
+thead tr, thead th, .compact-table thead th {
+  height: 60px !important;
+  min-height: 60px !important;
+  max-height: 60px !important;
+  line-height: 60px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  vertical-align: middle !important;
+}
+
+/* Slight divider line under header for contrast */
+thead th { box-shadow: inset 0 -1px 0 rgba(0,0,0,0.06) !important; }
+
+/* Preserve alignment for child elements */
+thead th, thead th > * { text-align: left !important; }
+
+/* Button icon utilities: add a small icon (unicode) before button text when a semantic
+   button class is present. Keep the visual spacing small and ensure the icon aligns
+   properly across browsers. These are intentionally lightweight to avoid adding
+   an icon library dependency. */
+.btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  justify-content: center !important;
+}
+.btn::before {
+  display: inline-block !important;
+  width: 1em !important;
+  text-align: center !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  content: none !important; /* default: no icon space unless a semantic .btn-* sets content */
+}
+.btn-delete::before { content: "\2212" !important; } /* minus sign (U+2212) */
+.btn-edit::before { content: "✎" !important; }
+.btn-create::before { content: "+" !important; }
+.btn-cancel::before { content: "✕" !important; }
+.btn-save::before { content: "✔" !important; }
+.btn-assign::before { content: "⇄" !important; }
+
+/* Ensure icon-only buttons (like close buttons) remain centered without extra text spacing */
+.btn.icon-only { padding-left: 8px !important; padding-right: 8px !important; }
+
+/* Remove CSS pseudo-icons for icon-only buttons and favor explicit SVGs */
+.btn.icon-only::before { content: none !important; display: none !important; }
+.btn.icon-only svg { width: 18px !important; height: 18px !important; display: block !important; }
+.btn.icon-only { display: inline-flex !important; align-items: center !important; justify-content: center !important; }
+
+/* Utility to force a specific padding on buttons (overrides inline styles) */
+.btn-force-padding { padding: 20px !important; }
+
+/* Responsive: stack form and preview on small screens */
+@media (max-width: 980px) {
+  /* Stack the modal form and preview when small */
+  .modal-flex {
+    flex-direction: column !important;
+    gap: 16px !important;
+  }
+  /* Make preview full width when stacked */
+  .modal-flex > .preview-bezel {
+    width: 100% !important;
+  }
+}
+
+/* Slightly more phone-like bezel for preview area */
+.preview-bezel {
+  border-radius: 20px;
+  background: #fafafa;
+  border: 1px solid #e6e6e6;
+}
+
+/* SMS preview bubble */
+.sms-bubble-wrapper { position: relative; }
+.sms-bubble {
+  display: inline-block;
+  background: #cfe9ff; /* light blue */
+  color: #02293a;
+  padding: 12px 14px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.35;
+  max-width: 85%;
+  position: relative;
+  box-shadow: 0 2px 0 rgba(0,0,0,0.02) inset;
+}
+.sms-bubble:after {
+  content: "";
+  position: absolute;
+  bottom: -8px;
+  left: 18px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-top: 8px solid #cfe9ff;
+  transform: rotate(0deg);
+}
+
+/* Slight variant to push bubble to the right (if needed) */
+.sms-bubble.right { margin-left: auto; display: block; }
+

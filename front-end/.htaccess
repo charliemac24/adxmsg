@@ -1,0 +1,35 @@
+# /.htaccess  (domain root)
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # ---------------------------------------------
+  # 0) (Optional) Serve the SPA entry by default
+  # ---------------------------------------------
+  # If your front-end is a static React/Next export with index.html at the root,
+  # keep this. If your entry file isn't index.html, adjust.
+  DirectoryIndex index.html
+
+  # ---------------------------------------------------
+  # 1) HANDS OFF /s/...  (let /s/.htaccess handle Laravel)
+  # ---------------------------------------------------
+  # This MUST be before any SPA catch-all or other rewrites.
+  RewriteRule ^s/ - [L]
+
+  # ---------------------------------------------------
+  # 2) Serve existing files/folders normally
+  # ---------------------------------------------------
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # ---------------------------------------------------
+  # 3) SPA fallback for everything else (front-end)
+  # ---------------------------------------------------
+  # Anything that's not a real file/dir and not /s/* goes to index.html
+  RewriteRule . /index.html [L]
+</IfModule>
+
+# Avoid content-negotiation oddities that can cause 404s
+Options -MultiViews
