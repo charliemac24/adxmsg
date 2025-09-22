@@ -16,7 +16,7 @@
   <body>
     <div class="card">
       <h1>{{ $title ?? 'You are unsubscribed' }}</h1>
-      <p>{{ $message ?? 'You have been successfully unsubscribed from our messages. You will no longer receive SMS from us.' }}</p>
+      <p>{{ $message ?? 'You have been successfully unsubscribed from our messages. You will no longer receive ADX Depot promotional and marketing SMS from us.' }}</p>
       <p class="muted">If this was a mistake and you want to subscribe again, please contact support or log into your account.</p>
       <a class="ok" href="#" id="exitBtn">Exit</a>
     </div>

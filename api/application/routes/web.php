@@ -67,3 +67,4 @@ Route::post('/u/{token}/confirm', [UnsubscribeRedirectController::class, 'confir
 Route::get('/debug-scheme', function (\Illuminate\Http\Request $r) {
     return ['secure' => $r->secure(), 'scheme' => $r->getScheme(), 'url' => url('/'), 'app_url' => config('app.url')];
 });
+// note: in production, ensure APP_URL is set correctly in .env

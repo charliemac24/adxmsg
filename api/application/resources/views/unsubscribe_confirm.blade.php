@@ -17,17 +17,11 @@
     <h1 style="margin-top:0;">Confirm unsubscribe</h1>
     <p>You’re about to stop receiving ADX Depot promotional and marketing SMS. Click <strong>Unsubscribe</strong> to confirm. You will then be redirected.</p>
 
-    <form method="POST" action="/u/{{ $token }}/confirm">
+    <form method="POST" action="/s/u/{{ $token }}/confirm">
       @csrf
       <div style="display:flex; gap:12px; margin-top:18px;">
         <button type="submit" class="btn btn-danger">Unsubscribe</button>
-        <a
-          href="/"
-          class="btn btn-cancel"
-          onclick="event.preventDefault(); try { window.open('', '_self'); window.close(); } catch (e) { window.location.href = '/'; }"
-        >
-          Cancel
-        </a>
+        <a href="/" class="btn btn-cancel">Cancel</a>
       </div>
     </form>
 
