@@ -27,10 +27,12 @@ class InboundMessage extends Model
     protected $fillable = [
         'from_number',
         'message_body',
+        'media_json',
+        'download_urls',
         'status',
         'received_at',
-    'twilio_sid',
-    'conversation_id',
+        'twilio_sid',
+        'conversation_id',
     ];
 
     /**

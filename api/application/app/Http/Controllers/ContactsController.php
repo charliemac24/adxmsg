@@ -540,20 +540,20 @@ class ContactsController extends Controller
         if ($request->filled('group_no')) {
             $groupParam = $request->get('group_no');
             if (is_array($groupParam)) {
-                $query->whereIn('id', $groupParam);
+                $query->whereIn('group_no', $groupParam);
             } else {
                 $vals = explode(',', (string) $groupParam);
-                $query->whereIn('id', array_filter($vals, fn($v) => $v !== ''));
+                $query->whereIn('group_no', array_filter($vals, fn($v) => $v !== ''));
             }
         }
 
         if ($request->filled('address_state')) {
             $stateParam = $request->get('address_state');
             if (is_array($stateParam)) {
-                $query->whereIn('id', $stateParam);
+                $query->whereIn('address_state', $stateParam);
             } else {
                 $vals = explode(',', (string) $stateParam);
-                $query->whereIn('id', array_filter($vals, fn($v) => $v !== ''));
+                $query->whereIn('address_state', array_filter($vals, fn($v) => $v !== ''));
             }
         }
 

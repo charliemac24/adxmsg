@@ -6,10 +6,14 @@ use Illuminate\Http\Request;
 use App\Models\InboundMessage;
 use App\Models\AutoResponseLog;
 use App\Models\Inbox;
+use Illuminate\Http\JsonResponse;
 use Twilio\Rest\Client;
 use Illuminate\Support\Facades\Log;
 use App\Models\InboundMessageView;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Http;
+
 
 /**
  * Class InboundMessageController
@@ -1277,6 +1281,459 @@ class InboundMessageController extends Controller
     }
 
     /**
+     * Update media_json field for all inbound messages that have attachments.
+     * This method loops through inbound messages and checks for MMS attachments,
+     * then stores the download URLs in the media_json field.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function updateMediaAttachments(Request $request)
+    {
+        $limit = (int) $request->query('limit', 100);
+        $offset = (int) $request->query('offset', 0);
+        $forceUpdate = (bool) $request->query('force', false);
+        
+        if ($limit <= 0) $limit = 100;
+        if ($offset < 0) $offset = 0;
+
+        try {
+            // Build query to get inbound messages with Twilio SIDs
+            $query = InboundMessage::whereNotNull('twilio_sid')
+                ->where('twilio_sid', '!=', '');
+
+            // Skip messages that already have media_json unless force update is requested
+            if (!$forceUpdate) {
+                $query->where(function($q) {
+                    $q->whereNull('media_json')
+                      ->orWhere('media_json', '')
+                      ->orWhere('media_json', '[]')
+                      ->orWhere('media_json', '{}');
+                });
+            }
+
+            $messages = $query->orderBy('created_at', 'desc')
+                ->limit($limit)
+                ->offset($offset)
+                ->get(['id', 'twilio_sid', 'media_json']);
+
+            $processed = 0;
+            $updated = 0;
+            $errors = [];
+            $skipped = 0;
+
+            foreach ($messages as $message) {
+                $processed++;
+                
+                try {
+                    $messageSid = $message->twilio_sid;
+                    
+                    // Skip if no valid Twilio SID
+                    if (empty($messageSid) || !preg_match('/^(SM|MM)[0-9a-f]{32}$/i', $messageSid)) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    // Get Twilio client
+                    list($twilio,) = $this->getTwilioClientAndFrom();
+                    
+                    // Fetch media items for this message
+                    $mediaItems = $twilio->messages($messageSid)->media->read();
+                    
+                    $mediaData = [];
+                    foreach ($mediaItems as $mediaItem) {
+                        $mediaData[] = [
+                            'media_sid' => $mediaItem->sid,
+                            'content_type' => $mediaItem->contentType,
+                            'size_bytes' => $mediaItem->size ?? null,
+                            'api_uri' => 'https://api.twilio.com' . $mediaItem->uri,
+                            'twilio_raw_url' => 'https://api.twilio.com' . str_replace('.json', '', $mediaItem->uri),
+                            'download_url' => url("/inbound-messages/{$messageSid}/media/{$mediaItem->sid}"),
+                        ];
+                    }
+
+                    // Update the message with media data (even if empty array)
+                    $message->media_json = json_encode($mediaData);
+                    $message->save();
+                    
+                    if (!empty($mediaData)) {
+                        $updated++;
+                        Log::info('Updated inbound message with media attachments', [
+                            'id' => $message->id,
+                            'twilio_sid' => $messageSid,
+                            'media_count' => count($mediaData)
+                        ]);
+                    }
+
+                } catch (\Exception $e) {
+                    $errors[] = [
+                        'id' => $message->id ?? null,
+                        'twilio_sid' => $message->twilio_sid ?? null,
+                        'error' => $e->getMessage()
+                    ];
+                    Log::warning('Failed to update media for inbound message', [
+                        'id' => $message->id ?? null,
+                        'twilio_sid' => $message->twilio_sid ?? null,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'processed' => $processed,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'errors' => count($errors),
+                'error_details' => $errors,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => count($messages) === $limit
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to update media attachments for inbound messages', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to update media attachments',
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Batch update media attachments for all inbound messages.
+     * This processes messages in batches to avoid memory issues.
+     * Designed for CRON usage with GET method.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function batchUpdateMediaAttachments(Request $request)
+    {
+        $batchSize = (int) $request->query('batch_size', 50);
+        $maxBatches = (int) $request->query('max_batches', 10);
+        $forceUpdate = (bool) $request->query('force', false);
+        
+        if ($batchSize <= 0) $batchSize = 50;
+        if ($maxBatches <= 0) $maxBatches = 10;
+
+        $totalProcessed = 0;
+        $totalUpdated = 0;
+        $totalErrors = 0;
+        $batchCount = 0;
+
+        try {
+            while ($batchCount < $maxBatches) {
+                $offset = $totalProcessed;
+                
+                // Process a batch
+                $batchRequest = new Request([
+                    'limit' => $batchSize,
+                    'offset' => $offset,
+                    'force' => $forceUpdate
+                ]);
+                
+                $response = $this->updateMediaAttachments($batchRequest);
+                $data = $response->getData(true);
+                
+                if (isset($data['error'])) {
+                    break;
+                }
+                
+                $totalProcessed += $data['processed'] ?? 0;
+                $totalUpdated += $data['updated'] ?? 0;
+                $totalErrors += $data['errors'] ?? 0;
+                $batchCount++;
+                
+                // If we processed fewer than the batch size, we're done
+                if (($data['processed'] ?? 0) < $batchSize) {
+                    break;
+                }
+                
+                // Small delay to prevent overwhelming Twilio API
+                usleep(100000); // 100ms delay
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'batches_processed' => $batchCount,
+                'total_processed' => $totalProcessed,
+                'total_updated' => $totalUpdated,
+                'total_errors' => $totalErrors,
+                'batch_size' => $batchSize
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to batch update media attachments', [
+                'error' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ]);
+            
+            return response()->json([
+                'error' => 'Batch update failed',
+                'message' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ], 500);
+        }
+    }
+
+    /**
+     * Update download_urls field for messages that have local media files.
+     * This creates accessible URLs for locally stored media files.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function updateDownloadUrls(Request $request)
+    {
+        $limit = (int) $request->query('limit', 100);
+        $offset = (int) $request->query('offset', 0);
+        $forceUpdate = (bool) $request->query('force', false);
+        
+        if ($limit <= 0) $limit = 100;
+        if ($offset < 0) $offset = 0;
+
+        try {
+            // Get messages that have media_json but no download_urls (unless force is true)
+            $query = InboundMessage::whereNotNull('media_json')
+                ->where('media_json', '!=', '')
+                ->where('media_json', '!=', '[]')
+                ->where('media_json', '!=', '{}');
+
+            if (!$forceUpdate) {
+                $query->where(function($q) {
+                    $q->whereNull('download_urls')
+                      ->orWhere('download_urls', '')
+                      ->orWhere('download_urls', '[]')
+                      ->orWhere('download_urls', '{}');
+                });
+            }
+
+            $messages = $query->orderBy('created_at', 'desc')
+                ->limit($limit)
+                ->offset($offset)
+                ->get(['id', 'twilio_sid', 'media_json', 'download_urls']);
+
+            $processed = 0;
+            $updated = 0;
+            $errors = [];
+            $skipped = 0;
+
+            foreach ($messages as $message) {
+                $processed++;
+                
+                try {
+                    $mediaItems = json_decode($message->media_json, true);
+                    if (!is_array($mediaItems) || empty($mediaItems)) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $downloadUrls = [];
+                    $hasUrls = false;
+
+                    foreach ($mediaItems as $mediaItem) {
+                        $mediaSid = $mediaItem['media_sid'] ?? '';
+                        $contentType = $mediaItem['content_type'] ?? '';
+                        
+                        if (empty($mediaSid)) continue;
+
+                        // Check if local file exists
+                        $extension = $this->getExtensionFromContentType($contentType);
+                        $fileName = "{$mediaSid}{$extension}";
+                        $storagePath = "media/inbound/{$message->twilio_sid}/{$fileName}";
+
+                        $downloadUrl = null;
+                        $localUrl = null;
+                        $fileExists = false;
+
+                        if (Storage::exists($storagePath)) {
+                            // File exists locally - create download URL
+                            $downloadUrl = url("/inbound-messages/{$message->twilio_sid}/media/{$mediaSid}");
+                            $localUrl = Storage::url($storagePath);
+                            $fileExists = true;
+                            $hasUrls = true;
+                        } else {
+                            // File doesn't exist locally - use Twilio fallback URL
+                            $downloadUrl = url("/inbound-messages/{$message->twilio_sid}/media/{$mediaSid}");
+                            $localUrl = null;
+                        }
+
+                        $downloadUrls[] = [
+                            'media_sid' => $mediaSid,
+                            'content_type' => $contentType,
+                            'download_url' => $downloadUrl,
+                            'local_url' => $localUrl,
+                            'local_path' => $fileExists ? $storagePath : null,
+                            'file_exists_locally' => $fileExists,
+                            'size_bytes' => $mediaItem['size_bytes'] ?? null,
+                            'updated_at' => now()->toISOString(),
+                        ];
+                    }
+
+                    // Update download_urls field
+                    if (!empty($downloadUrls)) {
+                        $message->download_urls = json_encode($downloadUrls);
+                        $message->save();
+                        $updated++;
+                        
+                        Log::info('Updated download URLs for inbound message', [
+                            'id' => $message->id,
+                            'twilio_sid' => $message->twilio_sid,
+                            'url_count' => count($downloadUrls),
+                            'local_files' => array_sum(array_column($downloadUrls, 'file_exists_locally'))
+                        ]);
+                    }
+
+                } catch (\Exception $e) {
+                    $errors[] = [
+                        'id' => $message->id,
+                        'twilio_sid' => $message->twilio_sid,
+                        'error' => $e->getMessage()
+                    ];
+                    
+                    Log::error('Error updating download URLs for message', [
+                        'id' => $message->id,
+                        'twilio_sid' => $message->twilio_sid,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'processed' => $processed,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'errors' => count($errors),
+                'error_details' => $errors,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => count($messages) === $limit
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to update download URLs', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to update download URLs',
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Batch update download URLs for all messages.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function batchUpdateDownloadUrls(Request $request)
+    {
+        $batchSize = (int) $request->query('batch_size', 50);
+        $maxBatches = (int) $request->query('max_batches', 10);
+        $forceUpdate = (bool) $request->query('force', false);
+        
+        if ($batchSize <= 0) $batchSize = 50;
+        if ($maxBatches <= 0) $maxBatches = 10;
+
+        $totalProcessed = 0;
+        $totalUpdated = 0;
+        $totalErrors = 0;
+        $batchCount = 0;
+
+        try {
+            while ($batchCount < $maxBatches) {
+                $offset = $totalProcessed;
+                
+                $batchRequest = new Request([
+                    'limit' => $batchSize,
+                    'offset' => $offset,
+                    'force' => $forceUpdate
+                ]);
+                
+                $response = $this->updateDownloadUrls($batchRequest);
+                $data = $response->getData(true);
+                
+                if (isset($data['error'])) {
+                    break;
+                }
+                
+                $totalProcessed += $data['processed'] ?? 0;
+                $totalUpdated += $data['updated'] ?? 0;
+                $totalErrors += $data['errors'] ?? 0;
+                $batchCount++;
+                
+                if (($data['processed'] ?? 0) < $batchSize) {
+                    break;
+                }
+                
+                // Small delay to prevent overwhelming the system
+                usleep(100000); // 100ms delay
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'batches_processed' => $batchCount,
+                'total_processed' => $totalProcessed,
+                'total_updated' => $totalUpdated,
+                'total_errors' => $totalErrors,
+                'batch_size' => $batchSize
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to batch update download URLs', [
+                'error' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ]);
+            
+            return response()->json([
+                'error' => 'Batch update download URLs failed',
+                'message' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ], 500);
+        }
+    }
+
+    /**
+     * Get file extension from content type.
+     *
+     * @param string $contentType
+     * @return string
+     */
+    private function getExtensionFromContentType($contentType)
+    {
+        $extensions = [
+            'image/jpeg' => '.jpg',
+            'image/jpg' => '.jpg',
+            'image/png' => '.png',
+            'image/gif' => '.gif',
+            'image/webp' => '.webp',
+            'image/bmp' => '.bmp',
+            'image/tiff' => '.tiff',
+            'video/mp4' => '.mp4',
+            'video/quicktime' => '.mov',
+            'audio/mpeg' => '.mp3',
+            'audio/wav' => '.wav',
+            'application/pdf' => '.pdf',
+            'text/plain' => '.txt',
+        ];
+        
+        return $extensions[$contentType] ?? '';
+    }
+
+    /**
      * Determine if a message is likely an order based on keywords.
      *
      * @param string $message
@@ -1550,4 +2007,570 @@ class InboundMessageController extends Controller
         return [$twilio, $from];
     }
 
+    /**
+     * Test-only endpoint to fetch recent inbound messages from Twilio for the configured number.
+     * Used to verify connectivity and see recent messages.
+     * Note: this is a test/debug endpoint and not intended for production use.
+     */
+    public function CaptureInboundMessagesForTest(): JsonResponse
+    {
+        $sid       = config('services.twilio.sid');
+        $token     = config('services.twilio.token');
+        $toNumber  = config('services.twilio.from');
+
+        if (!$sid || !$token || !$toNumber) {
+            return response()->json(['error' => 'Twilio credentials missing'], 500);
+        }
+
+        try {
+            $client = new Client($sid, $token);
+            $messages = $client->messages->read(['to' => $toNumber], 100);
+
+            $data = [];
+            foreach ($messages as $m) {
+                if (strpos($m->direction, 'inbound') !== false) {
+                    $data[] = [
+                        'sid'         => $m->sid,
+                        'from'        => $m->from,
+                        'to'          => $m->to,
+                        'body'        => $m->body,
+                        'status'      => $m->status,
+                        'direction'   => $m->direction,
+                        'date_sent'   => $m->dateSent ? $m->dateSent->format(DATE_ATOM) : null,
+                        'date_created'=> $m->dateCreated ? $m->dateCreated->format(DATE_ATOM) : null,
+                    ];
+                }
+            }
+
+            return response()->json($data);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'error' => 'Failed to fetch messages',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * List media items for a Twilio message SID.
+     * URL: /test/inbound-messages/{messageSid}/media
+     */
+    public function listMedia($messageSid): JsonResponse
+    {
+        try {
+            list($twilio,) = $this->getTwilioClientAndFrom();
+            $mediaItems = $twilio->messages($messageSid)->media->read();
+            $out = [];
+            foreach ($mediaItems as $m) {
+                $out[] = [
+                    'media_sid'    => $m->sid,
+                    'content_type' => $m->contentType,
+                    'size_bytes'   => $m->size ?? null,
+                    'api_uri'      => 'https://api.twilio.com' . $m->uri,
+                    // Direct Twilio raw URL (will prompt for auth if opened directly):
+                    'twilio_raw_url' => 'https://api.twilio.com' . str_replace('.json','',$m->uri),
+                    // Internal proxy URL (use this in the frontend):
+                    'download_url' => url("/test/inbound-messages/{$messageSid}/media/{$m->sid}"),
+                ];
+            }
+            return response()->json($out);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Download (proxy) a specific media file.
+     * URL: /test/inbound-messages/{messageSid}/media/{mediaSid}
+     */
+    public function downloadMedia($messageSid, $mediaSid)
+    {
+        try {
+            if (empty($messageSid) || empty($mediaSid)) {
+                return response()->json(['error' => 'messageSid and mediaSid required'], 422);
+            }
+
+            // Accept SMS (SM...) or MMS (MM...) as parent message SID
+            if (!preg_match('/^(SM|MM)[0-9a-f]{32}$/i', $messageSid)) {
+                \Log::warning('downloadMedia unusual messageSid', ['messageSid' => $messageSid]);
+            }
+
+            // Media SID must be ME...
+            if (!preg_match('/^ME[0-9a-f]{32}$/i', $mediaSid)) {
+                \Log::warning('downloadMedia unusual mediaSid', ['mediaSid' => $mediaSid]);
+            }
+
+            $cacheDir = 'twilio_media';
+            $basePath = "{$cacheDir}/{$messageSid}";
+            if (!\Storage::exists($basePath)) {
+                \Storage::makeDirectory($basePath);
+            }
+            $metaPath = "{$basePath}/{$mediaSid}.meta.json";
+
+            // Serve from cache if present
+            if (\Storage::exists($metaPath)) {
+                $meta = json_decode(\Storage::get($metaPath), true) ?: [];
+                $fileRel = $meta['file_rel'] ?? null;
+                if ($fileRel && \Storage::exists($fileRel)) {
+                    $content = \Storage::get($fileRel);
+                    $ct = $meta['content_type'] ?? 'application/octet-stream';
+                    return response($content, 200)->header('Content-Type', $ct);
+                }
+            }
+
+            // Twilio client + creds
+            [$twilio] = $this->getTwilioClientAndFrom();
+            $sid   = config('services.twilio.sid');
+            $token = config('services.twilio.token');
+
+            if (!$sid || !$token) {
+                return response()->json(['error' => 'Twilio credentials missing (SID/token)'], 500);
+            }
+
+            // 1) Fetch media metadata (gets contentType and the .uri)
+            $mediaObj    = $twilio->messages($messageSid)->media($mediaSid)->fetch();
+            $contentType = $mediaObj->contentType ?? 'application/octet-stream';
+
+            // 2) Build absolute raw URL (remove .json) and GET with Basic Auth
+            $rawUri = 'https://api.twilio.com' . str_replace('.json', '', $mediaObj->uri);
+
+            $binary = null;
+            $status = null;
+            try {
+                $resp   = $twilio->request('GET', $rawUri, ['auth' => [$sid, $token]]);
+                $status = method_exists($resp, 'getStatusCode') ? (int)$resp->getStatusCode() : null;
+                $binary = method_exists($resp, 'getContent') ? $resp->getContent() : null;
+            } catch (\Throwable $e) {
+                \Log::warning('Twilio request() failed; falling back to HTTP client', ['err' => $e->getMessage()]);
+            }
+
+            // 3) Fallback to Laravel HTTP client if needed (some hosts behave better)
+            if ($binary === null || $binary === '' || $status !== 200) {
+                $fallback = \Illuminate\Support\Facades\Http::withBasicAuth($sid, $token)
+                    ->withHeaders(['Accept' => '*/*'])
+                    ->timeout(30)
+                    ->get($rawUri);
+
+                if (!$fallback->successful()) {
+                    \Log::error('Twilio media fetch failed', [
+                        'status' => $fallback->status(),
+                        'body'   => substr((string)$fallback->body(), 0, 500),
+                        'url'    => $rawUri,
+                    ]);
+                    return response()->json([
+                        'error'   => 'Failed to download media from Twilio',
+                        'status'  => $fallback->status(),
+                        'message' => 'Check SID/token, media SID, or server network/SSL.',
+                    ], 502);
+                }
+
+                $binary = $fallback->body();
+                $ctHeader = $fallback->header('Content-Type');
+                if ($ctHeader) {
+                    $contentType = $ctHeader;
+                }
+            }
+
+            // 4) Guard: ensure we actually have bytes
+            if (!is_string($binary) || strlen($binary) === 0) {
+                return response()->json(['error' => 'Empty media response from Twilio'], 502);
+            }
+
+            // 5) Guess extension
+            $ext = 'bin';
+            if (preg_match('#^image/([a-z0-9.+-]+)$#i', $contentType, $m)) {
+                $ext = explode('+', $m[1])[0]; // handle things like image/svg+xml
+            } elseif (preg_match('#^audio/([a-z0-9.+-]+)$#i', $contentType, $m)) {
+                $ext = explode('+', $m[1])[0];
+            } elseif (preg_match('#^video/([a-z0-9.+-]+)$#i', $contentType, $m)) {
+                $ext = explode('+', $m[1])[0];
+            } elseif ($contentType === 'application/pdf') {
+                $ext = 'pdf';
+            }
+
+            $fileRel = "{$basePath}/{$mediaSid}.{$ext}";
+
+            // 6) Cache file + metadata
+            \Storage::put($fileRel, $binary);
+            \Storage::put($metaPath, json_encode([
+                'file_rel'     => $fileRel,
+                'content_type' => $contentType,
+                'size'         => strlen($binary),
+                'cached_at'    => now()->toIso8601String(),
+                'message_sid'  => $messageSid,
+                'media_sid'    => $mediaSid,
+            ], JSON_PRETTY_PRINT));
+
+            // 7) Stream back to client
+            return response($binary, 200)
+                ->header('Content-Type', $contentType)
+                ->header('Cache-Control', 'public, max-age=31536000')
+                ->header('Content-Disposition', 'inline; filename="'.$mediaSid.'.'.$ext.'"');
+
+        } catch (\Throwable $e) {
+            \Log::error('downloadMedia failed', [
+                'messageSid' => $messageSid,
+                'mediaSid'   => $mediaSid,
+                'exception'  => get_class($e),
+                'msg'        => $e->getMessage(),
+            ]);
+            $msg = $e->getMessage();
+            if ($msg === '') $msg = get_class($e);
+            return response()->json(['error' => $msg], 500);
+        }
+    }
+
+    public function displayMedia($messageSid, $mediaSid)
+    {
+        try {
+            // Find the inbound message by Twilio SID
+            $message = InboundMessage::where('twilio_sid', $messageSid)->first();
+            
+            if (!$message) {
+                return response('Message not found', 404);
+            }
+
+            // First try to get from download_urls field
+            $downloadUrls = $message->download_urls;
+            if (!empty($downloadUrls)) {
+                $downloadItems = json_decode($downloadUrls, true);
+                if (is_array($downloadItems)) {
+                    foreach ($downloadItems as $item) {
+                        if (isset($item['media_sid']) && $item['media_sid'] === $mediaSid) {
+                            // Check if local file exists
+                            $localPath = $item['local_path'] ?? '';
+                            if (!empty($localPath) && Storage::exists($localPath)) {
+                                $contentType = $item['content_type'] ?? 'application/octet-stream';
+                                
+                                return response(Storage::get($localPath))
+                                    ->header('Content-Type', $contentType)
+                                    ->header('Cache-Control', 'public, max-age=3600')
+                                    ->header('Content-Disposition', 'inline; filename="' . $mediaSid . '"');
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback to original Twilio method using media_json
+            $mediaJson = $message->media_json;
+            if (empty($mediaJson)) {
+                return response('No media attachments found', 404);
+            }
+
+            $mediaItems = json_decode($mediaJson, true);
+            if (!is_array($mediaItems)) {
+                return response('Invalid media data', 400);
+            }
+
+            // Find the specific media item by SID
+            $mediaItem = null;
+            foreach ($mediaItems as $item) {
+                if (isset($item['media_sid']) && $item['media_sid'] === $mediaSid) {
+                    $mediaItem = $item;
+                    break;
+                }
+            }
+
+            if (!$mediaItem) {
+                return response('Media item not found', 404);
+            }
+
+            // Check if it's an image content type
+            $contentType = $mediaItem['content_type'] ?? '';
+            if (!str_starts_with($contentType, 'image/')) {
+                return response('Media is not an image', 400);
+            }
+
+            // Get Twilio credentials and fetch from Twilio
+            list($twilio, $from) = $this->getTwilioClientAndFrom();
+            $sid = config('services.twilio.sid');
+            $token = config('services.twilio.token');
+
+            $mediaUrl = $mediaItem['twilio_raw_url'] ?? $mediaItem['api_uri'] ?? '';
+            
+            if (empty($mediaUrl)) {
+                return response('Media URL not available', 404);
+            }
+
+            $mediaUrl = str_replace('.json', '', $mediaUrl);
+
+            // Fetch the media with Twilio authentication
+            $response = Http::withBasicAuth($sid, $token)
+                ->timeout(30)
+                ->get($mediaUrl);
+
+            if (!$response->successful()) {
+                Log::warning('Failed to fetch media from Twilio', [
+                    'message_sid' => $messageSid,
+                    'media_sid' => $mediaSid,
+                    'status' => $response->status(),
+                    'url' => $mediaUrl
+                ]);
+                return response('Failed to fetch media', $response->status());
+            }
+
+            return response($response->body())
+                ->header('Content-Type', $contentType)
+                ->header('Cache-Control', 'public, max-age=3600')
+                ->header('Content-Disposition', 'inline; filename="' . $mediaSid . '"');
+
+        } catch (\Exception $e) {
+            Log::error('Error displaying media', [
+                'message_sid' => $messageSid,
+                'media_sid' => $mediaSid,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response('Internal server error', 500);
+        }
+    }
+
+    /**
+     * Download and store media locally, then update download_urls field.
+     * This function downloads media from Twilio and stores it locally for faster access.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function downloadAndStoreMedia(Request $request)
+    {
+        $limit = (int) $request->query('limit', 50);
+        $offset = (int) $request->query('offset', 0);
+        $forceDownload = (bool) $request->query('force', false);
+        
+        if ($limit <= 0) $limit = 50;
+        if ($offset < 0) $offset = 0;
+
+        try {
+            // Get messages that have media_json but no download_urls (unless force is true)
+            $query = InboundMessage::whereNotNull('media_json')
+                ->where('media_json', '!=', '')
+                ->where('media_json', '!=', '[]')
+                ->where('media_json', '!=', '{}');
+
+            if (!$forceDownload) {
+                $query->where(function($q) {
+                    $q->whereNull('download_urls')
+                      ->orWhere('download_urls', '')
+                      ->orWhere('download_urls', '[]')
+                      ->orWhere('download_urls', '{}');
+                });
+            }
+
+            $messages = $query->orderBy('created_at', 'desc')
+                ->limit($limit)
+                ->offset($offset)
+                ->get(['id', 'twilio_sid', 'media_json', 'download_urls']);
+
+            $processed = 0;
+            $downloaded = 0;
+            $errors = [];
+            $skipped = 0;
+
+            // Get Twilio credentials
+            list($twilio, $from) = $this->getTwilioClientAndFrom();
+            $sid = config('services.twilio.sid');
+            $token = config('services.twilio.token');
+
+            foreach ($messages as $message) {
+                $processed++;
+                
+                try {
+                    $mediaItems = json_decode($message->media_json, true);
+                    if (!is_array($mediaItems) || empty($mediaItems)) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $downloadData = [];
+                    $hasDownloads = false;
+
+                    foreach ($mediaItems as $mediaItem) {
+                        $mediaSid = $mediaItem['media_sid'] ?? '';
+                        $contentType = $mediaItem['content_type'] ?? '';
+                        
+                        if (empty($mediaSid)) continue;
+
+                        // Generate storage path
+                        $extension = $this->getExtensionFromContentType($contentType);
+                        $fileName = "{$mediaSid}{$extension}";
+                        $storagePath = "media/inbound/{$message->twilio_sid}/{$fileName}";
+
+                        // Check if file already exists and skip if not forcing
+                        if (!$forceDownload && Storage::exists($storagePath)) {
+                            $downloadData[] = [
+                                'media_sid' => $mediaSid,
+                                'content_type' => $contentType,
+                                'local_path' => $storagePath,
+                                'local_url' => Storage::url($storagePath),
+                                'size_bytes' => $mediaItem['size_bytes'] ?? null,
+                                'downloaded_at' => now()->toISOString(),
+                            ];
+                            continue;
+                        }
+
+                        // Download from Twilio
+                        $mediaUrl = $mediaItem['twilio_raw_url'] ?? $mediaItem['api_uri'] ?? '';
+                        if (empty($mediaUrl)) continue;
+
+                        $mediaUrl = str_replace('.json', '', $mediaUrl);
+
+                        $response = Http::withBasicAuth($sid, $token)
+                            ->timeout(30)
+                            ->get($mediaUrl);
+
+                        if ($response->successful()) {
+                            // Store the file
+                            Storage::put($storagePath, $response->body());
+                            
+                            $downloadData[] = [
+                                'media_sid' => $mediaSid,
+                                'content_type' => $contentType,
+                                'local_path' => $storagePath,
+                                'local_url' => Storage::url($storagePath),
+                                'size_bytes' => strlen($response->body()),
+                                'downloaded_at' => now()->toISOString(),
+                            ];
+                            
+                            $hasDownloads = true;
+                            
+                            Log::info('Downloaded media file', [
+                                'message_sid' => $message->twilio_sid,
+                                'media_sid' => $mediaSid,
+                                'storage_path' => $storagePath
+                            ]);
+                        } else {
+                            Log::warning('Failed to download media', [
+                                'message_sid' => $message->twilio_sid,
+                                'media_sid' => $mediaSid,
+                                'status' => $response->status()
+                            ]);
+                        }
+                    }
+
+                    // Update download_urls field
+                    if (!empty($downloadData)) {
+                        $message->download_urls = json_encode($downloadData);
+                        $message->save();
+                        
+                        if ($hasDownloads) {
+                            $downloaded++;
+                        }
+                    }
+
+                } catch (\Exception $e) {
+                    $errors[] = [
+                        'id' => $message->id,
+                        'twilio_sid' => $message->twilio_sid,
+                        'error' => $e->getMessage()
+                    ];
+                    
+                    Log::error('Error downloading media for message', [
+                        'id' => $message->id,
+                        'twilio_sid' => $message->twilio_sid,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'processed' => $processed,
+                'downloaded' => $downloaded,
+                'skipped' => $skipped,
+                'errors' => count($errors),
+                'error_details' => $errors,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => count($messages) === $limit
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to download and store media', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to download and store media',
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Batch download and store media for all messages.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function batchDownloadAndStoreMedia(Request $request)
+    {
+        $batchSize = (int) $request->query('batch_size', 25);
+        $maxBatches = (int) $request->query('max_batches', 10);
+        $forceDownload = (bool) $request->query('force', false);
+        
+        if ($batchSize <= 0) $batchSize = 25;
+        if ($maxBatches <= 0) $maxBatches = 10;
+
+        $totalProcessed = 0;
+        $totalDownloaded = 0;
+        $totalErrors = 0;
+        $batchCount = 0;
+
+        try {
+            while ($batchCount < $maxBatches) {
+                $offset = $totalProcessed;
+                
+                $batchRequest = new Request([
+                    'limit' => $batchSize,
+                    'offset' => $offset,
+                    'force' => $forceDownload
+                ]);
+                
+                $response = $this->downloadAndStoreMedia($batchRequest);
+                $data = $response->getData(true);
+                
+                if (isset($data['error'])) {
+                    break;
+                }
+                
+                $totalProcessed += $data['processed'] ?? 0;
+                $totalDownloaded += $data['downloaded'] ?? 0;
+                $totalErrors += $data['errors'] ?? 0;
+                $batchCount++;
+                
+                if (($data['processed'] ?? 0) < $batchSize) {
+                    break;
+                }
+                
+                // Delay to prevent overwhelming storage/network
+                usleep(200000); // 200ms delay
+            }
+
+            return response()->json([
+                'status' => 'completed',
+                'batches_processed' => $batchCount,
+                'total_processed' => $totalProcessed,
+                'total_downloaded' => $totalDownloaded,
+                'total_errors' => $totalErrors,
+                'batch_size' => $batchSize
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to batch download and store media', [
+                'error' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ]);
+            
+            return response()->json([
+                'error' => 'Batch download failed',
+                'message' => $e->getMessage(),
+                'batches_completed' => $batchCount,
+                'total_processed' => $totalProcessed
+            ], 500);
+        }
+    }
 }

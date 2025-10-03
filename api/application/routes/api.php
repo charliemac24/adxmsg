@@ -100,6 +100,7 @@ Route::prefix('v1')->group(function () {
             Artisan::call('inbound:sync');
             Artisan::call('outbound:sync');
             Artisan::call('migrate:inbox');
+            Artisan::call('inbound:update-media --download');
         } catch (\Exception $e) {
             return response()->json(['error' => 'failed', 'message' => $e->getMessage()], 500);
         }

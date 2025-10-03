@@ -19,6 +19,7 @@ class Kernel extends ConsoleKernel
         \App\Console\Commands\SendScheduledCampaigns::class,
     \App\Console\Commands\MigrateToInbox::class,
     \App\Console\Commands\ResetInboxReadFlags::class,
+    \App\Console\Commands\UpdateMediaAttachments::class,
     ];
 
     /**

@@ -6,6 +6,7 @@ use App\Http\Controllers\GroupsController;
 use App\Http\Controllers\OutboundMessageController;
 use App\Http\Controllers\CampaignController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\InboundMessageController;
 
 /*
 |--------------------------------------------------------------------------
@@ -68,3 +69,22 @@ Route::get('/debug-scheme', function (\Illuminate\Http\Request $r) {
     return ['secure' => $r->secure(), 'scheme' => $r->getScheme(), 'url' => url('/'), 'app_url' => config('app.url')];
 });
 // note: in production, ensure APP_URL is set correctly in .env
+
+Route::get('/test/inbound-messages', [InboundMessageController::class, 'CaptureInboundMessagesForTest']);
+Route::get('/test/inbound-messages/{messageSid}/media', [InboundMessageController::class, 'listMedia']);
+Route::get('/test/inbound-messages/{messageSid}/media/{mediaSid}', [InboundMessageController::class, 'downloadMedia']);
+
+// Add these routes to your routing file (routes/api.php or routes/web.php)
+Route::get('/inbound-messages/update-media', [InboundMessageController::class, 'updateMediaAttachments']);
+Route::get('/inbound-messages/batch-update-media', [InboundMessageController::class, 'batchUpdateMediaAttachments']);
+
+// Link to view media in browser
+Route::get('/inbound-messages/{messageSid}/media/{mediaSid}', [InboundMessageController::class, 'displayMedia']);
+
+// Media download and storage routes
+Route::get('/inbound-messages/download-and-store-media', [InboundMessageController::class, 'downloadAndStoreMedia']);
+Route::get('/inbound-messages/batch-download-and-store-media', [InboundMessageController::class, 'batchDownloadAndStoreMedia']);
+
+// Download URLs update routes
+Route::get('/inbound-messages/update-download-urls', [InboundMessageController::class, 'updateDownloadUrls']);
+Route::get('/inbound-messages/batch-update-download-urls', [InboundMessageController::class, 'batchUpdateDownloadUrls']);
